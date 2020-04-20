@@ -4,7 +4,19 @@ import { sql } from '../sql-string';
 /**
  * Columns to select in the `getAllSuppliers` query
  */
-const ALL_SUPPLIERS_COLUMNS = ['*'];
+const ALL_SUPPLIERS_COLUMNS = [
+  'id',
+  'companyname',
+  'contactname',
+  'contacttitle',
+  'address',
+  'city',
+  'region',
+  'postalcode',
+  'country',
+  'phone',
+  'fax'
+];
 
 /**
  * Retrieve a collection of all Supplier records from the database
@@ -12,9 +24,20 @@ const ALL_SUPPLIERS_COLUMNS = ['*'];
  */
 export async function getAllSuppliers() {
   const db = await getDb();
+  let productList = '';
+  switch (process.env.DB_TYPE) {
+    case 'pg':
+      productList = sql`string_agg(p.productname, ', ')`
+      break;
+  }
+
   return await db.all(sql`
-SELECT ${ALL_SUPPLIERS_COLUMNS.join(',')}
-FROM Supplier`);
+SELECT ${ALL_SUPPLIERS_COLUMNS.map((x) => `s.${x}`).join(',')},
+  ${productList} AS productlist
+FROM Supplier as s
+LEFT JOIN (SELECT * FROM Product ORDER BY productname DESC ) AS p ON p.supplierid = s.id
+GROUP BY s.id
+`);
 }
 
 /**

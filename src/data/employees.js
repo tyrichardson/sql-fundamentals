@@ -4,7 +4,23 @@ import { sql } from '../sql-string';
 /**
  * Columns to select for the `getAllEmployees` query
  */
-const ALL_EMPLOYEES_COLUMNS = ['*'];
+const ALL_EMPLOYEES_COLUMNS = [
+  'id',
+  'lastname',
+  'firstname',
+  'title',
+  'birthdate',
+  'hiredate',
+  'address',
+  'city',
+  'region',
+  'postalcode',
+  'country',
+  'homephone',
+  'ext',
+  'notes',
+  'reportsto'
+];
 
 /**
  * Retrieve a collection of all Employee records in the database
@@ -13,8 +29,11 @@ const ALL_EMPLOYEES_COLUMNS = ['*'];
 export async function getAllEmployees() {
   const db = await getDb();
   return await db.all(sql`
-SELECT ${ALL_EMPLOYEES_COLUMNS.join(',')}
-FROM Employee`);
+SELECT ${ALL_EMPLOYEES_COLUMNS.map((x) => `e.${x}`).join(',')}, count(co.id) as ordercount
+FROM Employee AS e
+LEFT JOIN CustomerOrder AS co ON co.employeeid = e.id
+GROUP BY e.id
+`);
 }
 
 /**

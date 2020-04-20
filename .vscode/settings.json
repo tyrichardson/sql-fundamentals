@@ -48,5 +48,6 @@
       "password": "theWindi$bl0wing",
       "connectionTimeout": 15
     }
-  ]
+  ],
+  "editor.defaultFormatter": "esbenp.prettier-vscode"
 }

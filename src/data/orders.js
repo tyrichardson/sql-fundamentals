@@ -1,10 +1,17 @@
 import { getDb } from '../db/utils';
 import { sql } from '../sql-string';
 
-export const ALL_ORDERS_COLUMNS = ['*'];
+export const ALL_ORDERS_COLUMNS = [
+  'id',
+  'customerid',
+  'employeeid',
+  'shipcity',
+  'shipcountry',
+  'shippeddate'
+];
 export const ORDER_COLUMNS = ['*'];
 
-/**
+/*
  * @typedef OrderCollectionOptions
  * @property {number} page Page number (zero-indexed)
  * @property {number} perPage Results per page
@@ -32,10 +39,13 @@ const DEFAULT_ORDER_COLLECTION_OPTIONS = Object.freeze(
  *    some strategy for viewing only a part of the collection at any given time
  * @param {Partial<OrderCollectionOptions>} opts Options for customizing the query
  * @returns {Promise<Order[]>} the orders
+ * getAllOrders({ sort: 'shippeddate', order: 'desc'});
+ * getAllOrders({ sort: 'customerid', order: 'asc' });
+ * getAllOrders({ page: 3, perPage: 25 });
+ * getCustomerOrders('ALFKI', { page: 5, perPage: 10 });
  */
-export async function getAllOrders(opts = {}) {
+export async function getAllOrders(opts = {}, whereClause = '') {
   // Combine the options passed into the function with the defaults
-
   /** @type {OrderCollectionOptions} */
   let options = {
     ...DEFAULT_ORDER_COLLECTION_OPTIONS,
@@ -43,19 +53,39 @@ export async function getAllOrders(opts = {}) {
   };
 
   const db = await getDb();
+  let sortClause = '';
+  if (options.sort && options.order) {
+    sortClause = sql`ORDER BY co.${options.sort} ${options.order.toUpperCase()}`;
+  }
+  let paginationClause = '';
+  if (typeof options.page !== 'undefined' && options.perPage) {
+    paginationClause = sql`LIMIT ${options.perPage}
+    OFFSET ${(options.page - 1) * options.perPage}`;
+  }
   return await db.all(sql`
-SELECT ${ALL_ORDERS_COLUMNS.join(',')}
-FROM CustomerOrder`);
+  SELECT ${ALL_ORDERS_COLUMNS.map((x) => `co.${x}`).join(',')},
+      c.companyname AS customername,
+      e.lastname AS employeename
+    FROM CustomerOrder AS co
+    LEFT JOIN Customer AS c ON co.customerid = c.id
+    LEFT JOIN Employee AS e ON co.employeeid = e.id
+    ${whereClause}
+    ${sortClause}
+    ${paginationClause}
+    `);
 }
 
 /**
  * Retrieve a list of CustomerOrder records associated with a particular Customer
  * @param {string} customerId Customer id
  * @param {Partial<OrderCollectionOptions>} opts Options for customizing the query
+≈
  */
 export async function getCustomerOrders(customerId, opts = {}) {
   // ! This is going to retrieve ALL ORDERS, not just the ones that belong to a particular customer. We'll need to fix this
-  return getAllOrders(opts);
+  //** @type {OrderCollectionOptions} */
+  let options = { ...{ page: 1, perPage: 20, sort: 'shippeddate', order: 'asc' }, ...opts };
+  return getAllOrders(options, sql`WHERE c.id = '${customerId}'`);
 }
 
 /**
@@ -67,9 +97,16 @@ export async function getOrder(id) {
   const db = await getDb();
   return await db.get(
     sql`
-SELECT *
-FROM CustomerOrder
-WHERE id = $1`,
+SELECT co.*,
+    c.companyname AS customername,
+    e.lastname AS employeename,
+    sum( (1 - od.discount) * od.unitprice * od.quantity ) AS subtotal
+FROM CustomerOrder AS co
+LEFT JOIN Customer AS c ON co.customerid = c.id
+LEFT JOIN Employee AS e ON co.employeeid = e.id
+LEFT JOIN OrderDetail AS od ON od.orderid = co.id
+WHERE co.id = $1
+GROUP BY co.id, c.companyname, e.lastname`,
     id
   );
 }
@@ -83,9 +120,11 @@ export async function getOrderDetails(id) {
   const db = await getDb();
   return await db.all(
     sql`
-SELECT *, unitprice * quantity as price
-FROM OrderDetail
-WHERE orderid = $1`,
+SELECT od.*, od.unitprice * od.quantity as price, p.productname
+FROM OrderDetail AS od
+LEFT JOIN Product AS p
+  ON od.productid = p.id
+WHERE od.orderid = $1`,
     id
   );
 }
@@ -108,7 +147,59 @@ export async function getOrderWithDetails(id) {
  * @returns {Promise<{id: string}>} the newly created order
  */
 export async function createOrder(order, details = []) {
-  return Promise.reject('Orders#createOrder() NOT YET IMPLEMENTED');
+  const db = await getDb();
+  await db.run('BEGIN;');
+  try {
+    let result = await db.run(
+      sql`
+    INSERT INTO CustomerOrder (
+      employeeid,
+      customerid,
+      shipcity,
+      shipaddress,
+      shipname,
+      shipvia,
+      shipregion,
+      shipcountry,
+      shippostalcode,
+      requireddate,
+      freight ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11 )`,
+      order.employeeid,
+      order.customerid,
+      order.shipcity,
+      order.shipaddress,
+      order.shipname,
+      order.shipvia,
+      order.shipregion,
+      order.shipcountry,
+      order.shippostalcode,
+      order.requireddate,
+      order.freight
+    );
+    if (!result || typeof result.lastID === 'undefined')
+      throw new Error('Order insertion did not return an id!');
+    let ct = 1;
+    let orderId = result.lastID;
+    await Promise.all(
+      details.map((detail) => {
+        return db.run(
+          sql`INSERT INTO OrderDetail(id, orderid, unitprice, quantity, discount, productid)
+      VALUES ( $1, $2, $3, $4, $5, $6)`,
+          `${orderId}/${ct++}`,
+          orderId,
+          detail.unitprice,
+          detail.quantity,
+          detail.discount,
+          detail.productid
+        );
+      })
+    );
+    await db.run('COMMIT;');
+    return { id: result.lastID };
+  } catch (e) {
+    await db.run('ROLLBACK;');
+    throw e;
+  }
 }
 
 /**
@@ -117,7 +208,13 @@ export async function createOrder(order, details = []) {
  * @returns {Promise<any>}
  */
 export async function deleteOrder(id) {
-  return Promise.reject('Orders#deleteOrder() NOT YET IMPLEMENTED');
+  const db = await getDb();
+  return await db.run(
+    sql`
+    DELETE FROM CustomerOrder
+    WHERE id = $1`,
+    id
+  );
 }
 
 /**
@@ -128,5 +225,64 @@ export async function deleteOrder(id) {
  * @returns {Promise<Partial<Order>>} the order
  */
 export async function updateOrder(id, data, details = []) {
-  return Promise.reject('Orders#updateOrder() NOT YET IMPLEMENTED');
+  const db = await getDb();
+  await db.run('BEGIN;');
+  try {
+    let result = await db.run(
+      sql`
+    UPDATE CustomerOrder
+    SET employeeid = $1,
+        customerid = $2,
+        shipcity = $3,
+        shipaddress = $4,
+        shipname = $5,
+        shipvia = $6,
+        shipregion = $7,
+        shipcountry = $8,
+        shippostalcode = $9,
+        requireddate = $10,
+        freight = $11
+    WHERE id = $12`,
+      data.employeeid,
+      data.customerid,
+      data.shipcity,
+      data.shipaddress,
+      data.shipname,
+      data.shipvia,
+      data.shipregion,
+      data.shipcountry,
+      data.shippostalcode,
+      data.requireddate,
+      data.freight,
+      id
+    );
+    if (!result || typeof result.lastID === 'undefined')
+      throw new Error('Order insertion did not return an id!');
+    let ct = 1;
+    let orderId = result.lastID;
+    await Promise.all(
+      details.map((detail) => {
+        return db.run(
+          sql`
+      UPDATE OrderDetail
+      SET
+        unitprice = $1,
+        quantity = $2,
+        discount = $3,
+        productid = $4
+      WHERE id = $5`,
+          detail.unitprice,
+          detail.quantity,
+          detail.discount,
+          detail.productid,
+          detail.id
+        );
+      })
+    );
+    await db.run('COMMIT;');
+    return { id: result.lastID };
+  } catch (e) {
+    await db.run('ROLLBACK;');
+    throw e;
+  }
 }
